@@ -176,22 +176,44 @@ def run_research(tickers, prior_dossiers):
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
     ticker_blocks = []
+    failures = []
     for ticker, company_name in tickers:
         try:
             block = research_one_ticker(client, ticker, company_name, today, prior_dossiers)
         except Exception as e:
             print(f"[warn] {ticker}: research call failed ({e}) — skipping this "
                   f"ticker, continuing with the rest.", file=sys.stderr)
+            failures.append((ticker, str(e)))
             block = None
         if block:
             ticker_blocks.append(block)
 
     header = f"*Portfolio Watch — {today}*"
 
-    if not ticker_blocks:
-        return f"{header}\nNo material new developments across the monitored tickers today."
+    # If every single ticker errored out, this is a failed run, not a quiet
+    # news day — say so explicitly instead of silently reporting "no news".
+    if failures and len(failures) == len(tickers):
+        print(f"[error] All {len(tickers)} ticker research calls failed — "
+              f"this is a run failure, not a quiet news day.", file=sys.stderr)
+        reason = failures[0][1]
+        return (
+            f"{header}\n"
+            f"⚠️ Research did not run — all {len(tickers)} ticker lookups failed "
+            f"with the same error (likely an API billing/credit or connectivity "
+            f"issue), so this is NOT a confirmed \"no news\" day. Check the "
+            f"Anthropic account and re-run.\nError: {reason}"
+        )
 
-    return header + "\n\n" + "\n\n".join(ticker_blocks)
+    if failures:
+        skipped = ", ".join(t for t, _ in failures)
+        note = f"\n\n(Note: {skipped} could not be checked this run due to an API error and should be rechecked.)"
+    else:
+        note = ""
+
+    if not ticker_blocks:
+        return f"{header}\nNo material new developments across the monitored tickers today.{note}"
+
+    return header + "\n\n" + "\n\n".join(ticker_blocks) + note
 
 
 def main():
@@ -225,6 +247,7 @@ def main():
 
     dossier = run_research(tickers, prior_dossiers)
     print(dossier)
+    run_failed = dossier.startswith(f"*Portfolio Watch — {datetime.now(timezone.utc).strftime('%Y-%m-%d')}*\n⚠️")
 
     if client is not None and channel_id is not None:
         try:
@@ -236,6 +259,9 @@ def main():
     else:
         print("[info] Slack delivery skipped (not authorized/connected).",
               file=sys.stderr)
+
+    if run_failed:
+        sys.exit(1)
 
 
 if __name__ == "__main__":
