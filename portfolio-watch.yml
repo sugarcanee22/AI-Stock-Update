@@ -2,8 +2,8 @@ name: Portfolio Watch
 
 on:
   schedule:
-    # 7:00 PM Singapore time (SGT = UTC+8) -> 11:00 UTC daily
-    - cron: "0 11 * * *"
+    # 7:00 AM Singapore time (SGT = UTC+8) -> 23:00 UTC (previous day)
+    - cron: "0 23 * * *"
   workflow_dispatch: {}  # allows manual runs from the Actions tab
 
 jobs:
