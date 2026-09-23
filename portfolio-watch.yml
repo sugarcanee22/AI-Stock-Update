@@ -27,5 +27,5 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
-          TICKERS: "AWX,S58,C09,D05,G13"
+          TICKERS: "D05:DBS Group Holdings,S58:SATS Ltd,C09:City Developments Limited (CDL),G13:Genting Singapore,AWX:AEM Holdings"
         run: python portfolio_watch.py
