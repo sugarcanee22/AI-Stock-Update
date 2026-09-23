@@ -84,15 +84,28 @@ def build_prompt(tickers, prior_dossiers):
 
     prior_block = "\n\n---\n\n".join(prior_dossiers) if prior_dossiers else "(none found)"
 
+    checklist = "\n".join(f"  {i+1}. {t}" for i, t in enumerate(tickers))
+
     return f"""You are monitoring a stock portfolio for material, price-moving news.
 
 Today's date: {today}
 
-TICKERS TO MONITOR: {", ".join(tickers)}
+TICKERS TO MONITOR ({len(tickers)} total — every single one below MUST be
+individually researched, with no exceptions):
+{checklist}
 
-TASK:
-For each ticker, search the web for material news, catalysts, or developing
-events from today and the last 4 days — earnings, guidance changes, M&A,
+MANDATORY SEARCH PROCESS — follow this exactly, do not skip or shortcut it:
+For EACH ticker in the list above, run at least one dedicated web search
+using that ticker's symbol AND its company name (e.g. search both "{tickers[0]}"
+and the company name it refers to) before deciding whether it has material
+news. Do not rely on general knowledge or skip a ticker because an earlier
+search for a different ticker seemed to cover the market broadly — each
+ticker gets its own explicit search pass. Work through the list in order,
+one ticker at a time, and only move to the write-up step once all
+{len(tickers)} tickers have been individually searched.
+
+For each ticker, look for material news, catalysts, or developing events
+from today and the last 4 days — earnings, guidance changes, M&A,
 regulatory/legal action, major product/contract announcements, executive
 changes, analyst rating changes with notable price-target moves, supply
 chain or geopolitical developments, and relevant macro events.
@@ -134,7 +147,7 @@ def run_research(tickers, prior_dossiers):
 
     message = client.messages.create(
         model=MODEL,
-        max_tokens=2000,
+        max_tokens=4000,  # raised to give room for a dedicated search per ticker
         tools=[{"type": "web_search_20250305", "name": "web_search"}],
         messages=[{"role": "user", "content": prompt}],
     )
