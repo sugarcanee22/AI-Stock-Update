@@ -79,81 +79,94 @@ def fetch_prior_dossiers(client, channel_id, limit):
     return prior_texts
 
 
-def build_prompt(tickers, prior_dossiers):
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+def build_ticker_prompt(ticker, today, prior_dossiers):
+    """Build a prompt scoped to exactly ONE ticker, so each ticker gets its
+    own guaranteed API call + search pass rather than sharing a budget with
+    the rest of the list."""
 
     prior_block = "\n\n---\n\n".join(prior_dossiers) if prior_dossiers else "(none found)"
 
-    checklist = "\n".join(f"  {i+1}. {t}" for i, t in enumerate(tickers))
-
-    return f"""You are monitoring a stock portfolio for material, price-moving news.
+    return f"""You are monitoring a single stock for material, price-moving news.
 
 Today's date: {today}
+TICKER: {ticker}
 
-TICKERS TO MONITOR ({len(tickers)} total — every single one below MUST be
-individually researched, with no exceptions):
-{checklist}
-
-MANDATORY SEARCH PROCESS — follow this exactly, do not skip or shortcut it:
-For EACH ticker in the list above, run at least one dedicated web search
-using that ticker's symbol AND its company name (e.g. search both "{tickers[0]}"
-and the company name it refers to) before deciding whether it has material
-news. Do not rely on general knowledge or skip a ticker because an earlier
-search for a different ticker seemed to cover the market broadly — each
-ticker gets its own explicit search pass. Work through the list in order,
-one ticker at a time, and only move to the write-up step once all
-{len(tickers)} tickers have been individually searched.
-
-For each ticker, look for material news, catalysts, or developing events
-from today and the last 4 days — earnings, guidance changes, M&A,
-regulatory/legal action, major product/contract announcements, executive
-changes, analyst rating changes with notable price-target moves, supply
-chain or geopolitical developments, and relevant macro events.
+TASK:
+Run at least one web search for this ticker (using both the raw ticker
+symbol and, if known, the company name it refers to) and look for material
+news, catalysts, or developing events from today and the last 4 days —
+earnings, guidance changes, M&A, regulatory/legal action, major
+product/contract announcements, executive changes, analyst rating changes
+with notable price-target moves, supply chain or geopolitical developments,
+and relevant macro events.
 
 Prioritize these sources when available: {SOURCES_HINT}.
 
-PRIOR DOSSIERS ALREADY SENT TO THE USER (do not re-report these unless there
-is a genuinely NEW, material update since they were last reported):
+PRIOR DOSSIERS ALREADY SENT TO THE USER FOR THIS TICKER (do not re-report
+these unless there is a genuinely NEW, material update since they were last
+reported):
 {prior_block}
 
-OUTPUT FORMAT (Slack message, plain text, Slack-friendly formatting only —
-use *bold* with single asterisks, line breaks, no markdown headers, no
-tables):
+OUTPUT:
+If there is a genuinely new, material development not already covered
+above, respond with ONLY this block (Slack-friendly plain text, *bold*
+with single asterisks, no markdown headers, no tables, no preamble):
 
-*Portfolio Watch — {today}*
-
-For each ticker with a genuinely new, material development not already
-covered above, include:
-*TICKER* — one-line event/catalyst summary
+*{ticker}* — one-line event/catalyst summary
 Near-term (days–weeks): <impact forecast>
 Longer-term (months+): <impact forecast>
 
-Leave a blank line between tickers.
-
-If a ticker has no material new development, omit it entirely — do not pad
-the report with routine/no-news items.
-
-If NOTHING material happened across the whole list, output only:
-*Portfolio Watch — {today}*
-No material new developments across the monitored tickers today.
-
-Do not include a preamble, sign-off, or any text outside the format above.
+If there is NO material new development for this ticker, respond with
+exactly the single word: NONE
+Do not include any other text, explanation, or preamble in either case.
 """
 
 
-def run_research(tickers, prior_dossiers):
-    client = Anthropic()  # picks up ANTHROPIC_API_KEY from env
-    prompt = build_prompt(tickers, prior_dossiers)
+def research_one_ticker(client, ticker, today, prior_dossiers):
+    prompt = build_ticker_prompt(ticker, today, prior_dossiers)
 
     message = client.messages.create(
         model=MODEL,
-        max_tokens=4000,  # raised to give room for a dedicated search per ticker
+        max_tokens=1200,
         tools=[{"type": "web_search_20250305", "name": "web_search"}],
         messages=[{"role": "user", "content": prompt}],
     )
 
     text_parts = [block.text for block in message.content if block.type == "text"]
-    return "\n".join(text_parts).strip()
+    result = "\n".join(text_parts).strip()
+
+    if result.upper() == "NONE" or not result:
+        print(f"[info] {ticker}: no material development found.", file=sys.stderr)
+        return None
+
+    print(f"[info] {ticker}: material development found.", file=sys.stderr)
+    return result
+
+
+def run_research(tickers, prior_dossiers):
+    """Runs one dedicated, independent API call per ticker so every ticker
+    is guaranteed its own search pass — coverage of one ticker never eats
+    into another's budget."""
+    client = Anthropic()  # picks up ANTHROPIC_API_KEY from env
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    ticker_blocks = []
+    for ticker in tickers:
+        try:
+            block = research_one_ticker(client, ticker, today, prior_dossiers)
+        except Exception as e:
+            print(f"[warn] {ticker}: research call failed ({e}) — skipping this "
+                  f"ticker, continuing with the rest.", file=sys.stderr)
+            block = None
+        if block:
+            ticker_blocks.append(block)
+
+    header = f"*Portfolio Watch — {today}*"
+
+    if not ticker_blocks:
+        return f"{header}\nNo material new developments across the monitored tickers today."
+
+    return header + "\n\n" + "\n\n".join(ticker_blocks)
 
 
 def main():
