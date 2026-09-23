@@ -29,7 +29,13 @@ from anthropic import Anthropic
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 
-DEFAULT_TICKERS = ["AWX", "S58", "C09", "D05", "G13"]
+DEFAULT_TICKERS = [
+    ("D05", "DBS Group Holdings"),
+    ("S58", "SATS Ltd"),
+    ("C09", "City Developments Limited (CDL)"),
+    ("G13", "Genting Singapore"),
+    ("AWX", "AEM Holdings"),
+]
 
 MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-5")
 HISTORY_LOOKBACK = int(os.environ.get("HISTORY_LOOKBACK", "50"))
@@ -41,10 +47,26 @@ SOURCES_HINT = (
 
 
 def get_tickers():
+    """Returns a list of (ticker, company_name) tuples.
+
+    TICKERS env var format: "D05:DBS Group Holdings,S58:SATS Ltd,..."
+    A bare ticker with no ":name" is also accepted (name left blank).
+    """
     raw = os.environ.get("TICKERS")
-    if raw:
-        return [t.strip().upper() for t in raw.split(",") if t.strip()]
-    return DEFAULT_TICKERS
+    if not raw:
+        return DEFAULT_TICKERS
+
+    pairs = []
+    for item in raw.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        if ":" in item:
+            ticker, name = item.split(":", 1)
+            pairs.append((ticker.strip().upper(), name.strip()))
+        else:
+            pairs.append((item.upper(), ""))
+    return pairs
 
 
 def slack_client():
@@ -79,30 +101,33 @@ def fetch_prior_dossiers(client, channel_id, limit):
     return prior_texts
 
 
-def build_ticker_prompt(ticker, today, prior_dossiers):
+def build_ticker_prompt(ticker, company_name, today, prior_dossiers):
     """Build a prompt scoped to exactly ONE ticker, so each ticker gets its
     own guaranteed API call + search pass rather than sharing a budget with
     the rest of the list."""
 
     prior_block = "\n\n---\n\n".join(prior_dossiers) if prior_dossiers else "(none found)"
+    identity = f"{ticker} ({company_name})" if company_name else ticker
 
     return f"""You are monitoring a single stock for material, price-moving news.
 
 Today's date: {today}
-TICKER: {ticker}
+STOCK: {identity} — trades on the Singapore Exchange (SGX) under ticker
+code {ticker}.
 
 TASK:
-Run at least one web search for this ticker (using both the raw ticker
-symbol and, if known, the company name it refers to) and look for material
-news, catalysts, or developing events from today and the last 4 days —
-earnings, guidance changes, M&A, regulatory/legal action, major
-product/contract announcements, executive changes, analyst rating changes
-with notable price-target moves, supply chain or geopolitical developments,
-and relevant macro events.
+Run at least one web search for this stock using its company name
+("{company_name}") AND at least one search using its SGX ticker code
+("{ticker}"), since the code alone is often ambiguous outside Singapore.
+Look for material news, catalysts, or developing events from today and the
+last 4 days — earnings, guidance changes, M&A, regulatory/legal action,
+major product/contract announcements, executive changes, analyst rating
+changes with notable price-target moves, supply chain or geopolitical
+developments, and relevant macro events.
 
 Prioritize these sources when available: {SOURCES_HINT}.
 
-PRIOR DOSSIERS ALREADY SENT TO THE USER FOR THIS TICKER (do not re-report
+PRIOR DOSSIERS ALREADY SENT TO THE USER FOR THIS STOCK (do not re-report
 these unless there is a genuinely NEW, material update since they were last
 reported):
 {prior_block}
@@ -112,18 +137,18 @@ If there is a genuinely new, material development not already covered
 above, respond with ONLY this block (Slack-friendly plain text, *bold*
 with single asterisks, no markdown headers, no tables, no preamble):
 
-*{ticker}* — one-line event/catalyst summary
+*{ticker} ({company_name})* — one-line event/catalyst summary
 Near-term (days–weeks): <impact forecast>
 Longer-term (months+): <impact forecast>
 
-If there is NO material new development for this ticker, respond with
+If there is NO material new development for this stock, respond with
 exactly the single word: NONE
 Do not include any other text, explanation, or preamble in either case.
 """
 
 
-def research_one_ticker(client, ticker, today, prior_dossiers):
-    prompt = build_ticker_prompt(ticker, today, prior_dossiers)
+def research_one_ticker(client, ticker, company_name, today, prior_dossiers):
+    prompt = build_ticker_prompt(ticker, company_name, today, prior_dossiers)
 
     message = client.messages.create(
         model=MODEL,
@@ -146,14 +171,14 @@ def research_one_ticker(client, ticker, today, prior_dossiers):
 def run_research(tickers, prior_dossiers):
     """Runs one dedicated, independent API call per ticker so every ticker
     is guaranteed its own search pass — coverage of one ticker never eats
-    into another's budget."""
+    into another's budget. `tickers` is a list of (ticker, company_name)."""
     client = Anthropic()  # picks up ANTHROPIC_API_KEY from env
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
     ticker_blocks = []
-    for ticker in tickers:
+    for ticker, company_name in tickers:
         try:
-            block = research_one_ticker(client, ticker, today, prior_dossiers)
+            block = research_one_ticker(client, ticker, company_name, today, prior_dossiers)
         except Exception as e:
             print(f"[warn] {ticker}: research call failed ({e}) — skipping this "
                   f"ticker, continuing with the rest.", file=sys.stderr)
